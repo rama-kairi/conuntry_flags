@@ -7,56 +7,59 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 
 	"github.com/PuerkitoBio/goquery"
 )
 
-func main() {
-	url := "https://www.countryflags.com/"
-	resp, err := http.Get(url)
-	if err != nil {
-		fmt.Println(err)
-	}
-	defer resp.Body.Close()
+const url string = "https://www.countryflags.com/"
 
-	doc, err := goquery.NewDocumentFromReader(resp.Body)
-	if err != nil {
+func getImageUrlList(url string) ([]string, int) {
+	var imageUrls []string
+	if doc, err := goquery.NewDocument(url); err != nil {
 		log.Fatal(err)
+	} else {
+		doc.Find(".thumb img").Each(func(i int, s *goquery.Selection) {
+			imageUrls = append(imageUrls, s.AttrOr("src", ""))
+		})
 	}
+	return imageUrls, len(imageUrls)
+}
 
-	imageLinks := make([]string, 0)
+func downloadImage(url string, fileName string, waitGroup *sync.WaitGroup) {
+	if resp, err := http.Get(url); err != nil {
+		log.Fatal(err)
+	} else {
+		defer resp.Body.Close()
+		if file, err := os.Create("Flags/" + fileName + ".png"); err != nil {
+			log.Fatal(err)
+		} else {
+			defer file.Close()
+			if _, err := io.Copy(file, resp.Body); err != nil {
+				log.Fatal(err)
+			}
+		}
+	}
+	waitGroup.Done()
+}
 
-	doc.Find(".thumb img").Each(func(i int, s *goquery.Selection) {
-		imageLinks = append(imageLinks, s.AttrOr("src", ""))
-	})
+func main() {
+	imageUrlList, imageUrlListLen := getImageUrlList(url)
 
-	// Create Flags folder if not exists
 	if _, err := os.Stat("Flags"); os.IsNotExist(err) {
 		os.Mkdir("Flags", 0o755)
 	}
 
-	imageLinksLength := len(imageLinks)
+	waitGroup := new(sync.WaitGroup)
 
-	// Save the images to Flag Folder
-	for i, link := range imageLinks {
-		resp, err := http.Get(link)
-		if err != nil {
-			fmt.Println(err)
-		}
-		defer resp.Body.Close()
+	// Make concurrent requests to download images
+	for i, image := range imageUrlList {
+		fileName := strings.Split(image, "/")[4]
+		fmt.Println("Downloading "+fileName, "...", i+1, "of", imageUrlListLen)
 
-		countryName := strings.Split(link, "/")[4]
-
-		file, err := os.Create("Flags/" + countryName + ".png")
-		if err != nil {
-			log.Fatal(err)
-		}
-		defer file.Close()
-
-		_, err = io.Copy(file, resp.Body)
-		if err != nil {
-			log.Fatal(err)
-		}
-		fmt.Println("Downloaded: "+countryName, i, "/", imageLinksLength)
+		waitGroup.Add(1)
+		go downloadImage(image, fileName, waitGroup)
 	}
+
+	waitGroup.Wait()
 }
